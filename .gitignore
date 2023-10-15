@@ -1,0 +1,6 @@
+.vscode/
+build/
+other_stuff/
+*.pem
+!client/*.cpp
+!CMakeLists.txt 
