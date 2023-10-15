@@ -1,4 +1,5 @@
 .vscode/
+externals/
 build/
 other_stuff/
 *.pem
