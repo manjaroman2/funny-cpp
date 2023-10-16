@@ -7,11 +7,11 @@
 const char MAGIC_BYTES = sizeof(MAGIC_TYPE);
 const char SIZE_BYTES = sizeof(SIZE_TYPE);
 const char PREFIX_BYTES = MAGIC_BYTES + SIZE_BYTES;
-const SIZE_TYPE MAX_MESSAGE_SIZE = 65536;                          // Max number encoded by SIZE_TYPE
+const SIZE_TYPE MAX_MESSAGE_SIZE = (SIZE_TYPE) 65536;              // Max number encoded by SIZE_TYPE
 const int MAX_FULL_MESSAGE_SIZE = MAX_MESSAGE_SIZE + PREFIX_BYTES; // Max amount of bytes to store of accepted connection
 const int PRE_MESSAGE_BUFFER_SIZE = MAX_FULL_MESSAGE_SIZE * 3;     // Max amount of bytes to store of non-accepted connection
 
-const MAGIC_TYPE DISCONNECT = 255; 
+const MAGIC_TYPE DISCONNECT = 255;  
 const MAGIC_TYPE CONNECT = DISCONNECT - 1;
 const MAGIC_TYPE LOG = CONNECT - 1;
 const MAGIC_TYPE REQ_CONNECT = LOG - 1;
@@ -38,7 +38,7 @@ void hang_until_read(int fd, char *buf, int len)
     }
 }
 
-void hang_until_write(int fd, char *buf, int len)
+int hang_until_write(int fd, char *buf, int len)
 {
     int m = write(fd, buf, len);
     int d = len - m;
@@ -48,6 +48,7 @@ void hang_until_write(int fd, char *buf, int len)
         m = write(fd, buf, d);
         d -= m;
     }
+    return len;
 }
 
 void hang_until_socket_send(TCPSocket<> *socket, char *buf, int len)
@@ -102,6 +103,14 @@ int _write(int fd, MAGIC_TYPE magic, const char *fmt, ...)
     return PREFIX_BYTES + r;
 }
 
+int write_connect(MAGIC_TYPE connection) {
+    char* buffer = new char[PREFIX_BYTES];
+    memcpy(buffer, &CONNECT, MAGIC_BYTES);
+    buffer += MAGIC_BYTES;
+    SIZE_TYPE size = (SIZE_TYPE) connection;
+    memcpy(buffer, &size, SIZE_BYTES);
+    return hang_until_write(API_OUT_FILENO, buffer, PREFIX_BYTES);
+}
 int write_log(const char *fmt, ...) { return _write(LOG_FILENO, LOG, fmt); }
 int write_api(MAGIC_TYPE magic, const char *fmt, ...) { return _write(API_OUT_FILENO, magic, fmt); }
 
@@ -110,8 +119,8 @@ int write_req_connect(MAGIC_TYPE connection) {
     char *buffer = new char[PREFIX_BYTES];
     memcpy(buffer, &REQ_CONNECT, MAGIC_BYTES);
     buffer += MAGIC_BYTES;
-    memcpy(buffer, &connection, SIZE_BYTES); 
-    hang_until_write(API_OUT_FILENO, buffer, PREFIX_BYTES);
-    delete[] buffer;
+    SIZE_TYPE size = (SIZE_TYPE) connection;
+    memcpy(buffer, &size, SIZE_BYTES);
+    return hang_until_write(API_OUT_FILENO, buffer, PREFIX_BYTES);
 }
 int write_msg(MAGIC_TYPE connection, const char *fmt, ...) { return write_api(connection, fmt); }
