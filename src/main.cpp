@@ -145,6 +145,8 @@ int main(int argc, char **argv)
     int listen_port = 8888;
     if (argc > 1)
         listen_port = atoi(argv[1]);
+    
+    printf("Starting server on port %d\n", listen_port);
     // Initialize server socket..
     TCPServer<> tcpServer;
 
