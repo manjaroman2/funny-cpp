@@ -4,4 +4,7 @@
             "3333"
         ]
     },
+    "cmake.loadCompileCommands": true,
+    "C_Cpp.default.compileCommands": "${workspaceFolder}/build/compile_commands.json",
+    "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
 }
