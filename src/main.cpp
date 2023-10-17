@@ -4,36 +4,36 @@
 #include <atomic>
 #include <algorithm>
 
-TCPSocket<> **connections_map = new TCPSocket<> *[MAX_CONNECTIONS];
-char **message_buffer = new char *[MAX_CONNECTIONS];
-bool *connection_accepted = new bool[MAX_CONNECTIONS];
+TCPSocket<> *connections_map[MAX_CONNECTIONS];
+char *pre_message_buffer[MAX_CONNECTIONS];
+bool connection_accepted[MAX_CONNECTIONS];
 
-std::atomic<MAGIC_TYPE> CC = 0; // Connections counter
+std::atomic<Magic> CC = 0; // Connections counter, points to the next free connection
 
 TCPSocket<> create_socket(
-    char *ip, int port, MAGIC_TYPE connection)
+    std::string ip, const int port, Magic connection)
 {
 
     TCPSocket<> tcpSocket([](int errorCode, std::string errorMessage)
-                          { write_log("Socket creation error: %d : %s", errorCode, errorMessage); });
+                          { log_info("Socket creation error: %d : %s", errorCode, errorMessage); });
 
     tcpSocket.onRawMessageReceived = [connection](const char *message, int length)
     {
-        write_msg(connection, message);
+        api_message(connection, message);
     };
 
     tcpSocket.onSocketClosed = [connection](int errorCode)
     {
-        write_close(connection);
+        api_disconnect(connection);
     };
 
     tcpSocket.Connect(
         ip, port, [connection]
-        { write_msg(connection, "Hello Server!"); },
+        { api_connect(connection); },
         [connection](int errorCode, std::string errorMessage)
         {
-            write_close(connection);
-            // write_log("Connection failed: %d : %s", errorCode, errorMessage);
+            api_disconnect(connection);
+            // log_info("Connection failed: %d : %s", errorCode, errorMessage);
         });
 
     return tcpSocket;
@@ -46,92 +46,95 @@ void start_api()
     1 Byte magic + 2**16 bits length (ushort=2 bytes)
     */
 
-    char *magic_buf = new char[MAGIC_BYTES];
-    char *message_size_buf = new char[SIZE_BYTES];
-    char *read_buffer = new char[MAX_MESSAGE_SIZE];
+    char magic_buf[MAGIC_SIZE];
+    char mlength_buf[MLENGTH_SIZE];
+    char message_buf[MAX_MESSAGE_LENGTH];
+    Magic magic, client_CC;
+    MLength mlength;
+    
+    std::string ip; 
+    int port; 
 
     memset(connections_map, 0, MAX_CONNECTIONS);
-    TCPSocket<> conn;
-    MAGIC_TYPE magic;
-    MAGIC_TYPE client_CC;
-    SIZE_TYPE message_size;
-    char ip;
-    char *pch;
-    int message_buffer_filled;
+    int pre_message_buffer_filled;
     while (true)
     {
-        hang_until_read(STDIN_FILENO, magic_buf, MAGIC_BYTES);
-        hang_until_read(STDIN_FILENO, message_size_buf, SIZE_BYTES);
-        memcpy(&message_size, message_size_buf, SIZE_BYTES); // Convert 2 Bytes to ushort
-        hang_until_read(STDIN_FILENO, read_buffer, message_size);
-        memcpy(&magic, magic_buf, MAGIC_BYTES);
-        switch (magic)
-        {             // 256 Cases possible
-        case CONNECT: // Connect
-            pch = strtok(read_buffer, ":");
-            ip = *pch;
-            pch = strtok(NULL, ":");
-            conn = create_socket(&ip, atoi(pch), CC);
-            connections_map[CC] = &conn;
-            // write_api(CONNECT, "%d", CC); // Send connection number (magic byte + 2 bytes length + 1 byte connection number
-            write_connect(CC);
-            CC += 1;
-            memset(read_buffer, 0, message_size);
-            break;
-        case DISCONNECT:
-            if (message_size > CC - 1) // We save 1 Byte by passing the connection number in the size yay
+        hang_until_read(STDIN_FILENO, magic_buf, MAGIC_SIZE);
+        hang_until_read(STDIN_FILENO, mlength_buf, MLENGTH_SIZE);
+        memcpy(&mlength, &mlength_buf, MLENGTH_SIZE); // Convert 2 Bytes to ushort
+        hang_until_read(STDIN_FILENO, message_buf, mlength);
+        memcpy(&magic, magic_buf, MAGIC_SIZE);
+        switch (magic) // 256 Cases possible
+        {
+        case CONNECT:
+            if (CC >= MAX_CONNECTIONS)
             {
-                write_log("  Connection number %d is invalid", message_size);
+                log_err("  Connection limit reached");
                 break;
             }
-            client_CC = (MAGIC_TYPE) message_size;
+            ip = strtok(message_buf, ":");
+            port = atoi(strtok(NULL, ":")); 
+            *connections_map[CC] = create_socket(ip, port, CC);
+            api_connect(CC);
+            CC += 1;
+            memset(message_buf, 0, mlength);
+            break;
+        case DISCONNECT:
+            client_CC = (Magic)mlength;
+            if (client_CC > CC - 1) // We save 1 Byte by passing the connection number in the size yay
+            {
+                log_err("  Connection number %d is invalid", client_CC);
+                break;
+            }
             connections_map[client_CC]->Close();
             CC -= 1;
             connections_map[client_CC] = connections_map[CC];
             connections_map[CC] = nullptr;
             break;
-        case ALLOW_CONNECT:
-            if (message_size > CC - 1) // We save another Byte
+        case ALLOW_CONNECT: // Need this to accept incoming messages
+            client_CC = (Magic)mlength;
+            if (client_CC > CC - 1 || pre_message_buffer[client_CC] == nullptr) // We save another Byte
             {
-                write_log("  Connection number %d is invalid", message_size);
+                log_err("  Connection number %d is invalid", client_CC);
                 break;
             }
-            client_CC = (MAGIC_TYPE) message_size;
-            message_buffer_filled = strlen(message_buffer[client_CC]);
-            while (message_buffer_filled > 0) // Send message buffer
+            pre_message_buffer_filled = strlen(pre_message_buffer[client_CC]);
+            while (pre_message_buffer_filled > 0) // Send message buffer
             {
-                if (message_buffer_filled - MAX_MESSAGE_SIZE <= 0)
+                if (pre_message_buffer_filled <= MAX_MESSAGE_LENGTH)
                 {
-                    memcpy(read_buffer, message_buffer[client_CC], message_buffer_filled);
-                    message_buffer_filled = 0;
-                    write_msg(client_CC, read_buffer);
-                    memset(read_buffer, 0, message_buffer_filled);
+                    memset(message_buf, 0, pre_message_buffer_filled);
+                    memcpy(message_buf, pre_message_buffer[client_CC], pre_message_buffer_filled);
+                    pre_message_buffer_filled = 0;
+                    api_message(client_CC, message_buf);
+                    memset(message_buf, 0, pre_message_buffer_filled);
                     break;
                 }
-                memcpy(read_buffer, message_buffer[client_CC], MAX_MESSAGE_SIZE);
-                message_buffer_filled -= MAX_MESSAGE_SIZE;
-                write_msg(client_CC, read_buffer);
-                memset(read_buffer, 0, MAX_MESSAGE_SIZE); // This will be called more often than nessesary but it's fine
+                memcpy(message_buf, pre_message_buffer[client_CC], MAX_MESSAGE_LENGTH);
+                pre_message_buffer_filled -= MAX_MESSAGE_LENGTH;
+                api_message(client_CC, message_buf);
             }
             break;
         case CONNECTION_INFO:
-            if (message_size > CC - 1) // We save another Byte
+            client_CC = (Magic)mlength;
+            if (client_CC > CC - 1) // We save another Byte
             {
-                write_log("  Connection number %d is invalid", message_size);
+                log_info("  Connection number %d is invalid", client_CC);
                 break;
             }
-            conn = *connections_map[message_size];
-            write_api(CONNECTION_INFO, "%s:%d", conn.remoteAddress().c_str(), conn.remotePort());
+            ip = connections_map[client_CC]->remoteAddress().c_str(); 
+            port = connections_map[client_CC]->remotePort();
+            api_connection_info(client_CC, "%s:%d", ip, port);  
             break;
         default: // Send message to one of connected sockets
-            if (magic == LOG)
+            if (magic == LOG_INFO || magic == LOG_ERROR)
                 break; // Client should not send log messages
             if (magic > CC - 1)
             {
                 printf("  Connection number %d is invalid\n", *magic_buf);
                 break;
             }
-            hang_until_socket_send(connections_map[magic], read_buffer, message_size);
+            hang_until_socket_send(connections_map[magic], message_buf, mlength);
             break;
         }
     }
@@ -148,33 +151,32 @@ int main(int argc, char **argv)
     // When a new client connected:
     tcpServer.onNewConnection = [](TCPSocket<> *newClient)
     {
-        // write_log("New client: [%s:%d]", newClient->remoteAddress().c_str(), newClient->remotePort());
-        MAGIC_TYPE client_CC = CC;
-        write_req_connect(CC);
+        // log_info("New client: [%s:%d]", newClient->remoteAddress().c_str(), newClient->remotePort());
+        Magic client_CC = CC;
+        api_req_connect(CC);
         CC += 1;
-        message_buffer[client_CC] = new char[MAX_MESSAGE_SIZE];
+        pre_message_buffer[client_CC] = new char[MAX_MESSAGE_LENGTH];
         int message_buffer_filled = 0;
 
         newClient->onRawMessageReceived = [newClient, &message_buffer_filled, &client_CC](const char *message, int length)
         {
-            if (length > MAX_MESSAGE_SIZE) // No log just f you
+            if (length > MAX_MESSAGE_LENGTH) // No log just f you
                 return newClient->Close();
             if (connections_map[client_CC] != nullptr) // Connection accepted
-                write_msg(client_CC, message);
+                api_message(client_CC, message);
             else
             { // Save messages to buffer while connection is not accepted
-                int d = message_buffer_filled + length - MAX_MESSAGE_SIZE;
+                int d = message_buffer_filled + length - MAX_MESSAGE_LENGTH;
                 if (d > 0)
                 {
-                    write_log("Message buffer overflow from %s:%d by %d bytes", newClient->remoteAddress().c_str(), newClient->remotePort(), d);
-                    newClient->Send(make_buffer(MESSAGE_BUFFER_OVERFLOW, "Message buffer overflow by %d bytes", d));
-                    write_log("Closing connection with %s:%d", newClient->remoteAddress().c_str(), newClient->remotePort());
+                    log_info("Message buffer overflow from %s:%d by %d bytes", newClient->remoteAddress().c_str(), newClient->remotePort(), d);
+                    // newClient->Send(make_buffer_fmt(MESSAGE_BUFFER_OVERFLOW, "Message buffer overflow by %d bytes", d));
                     newClient->Close();
                     return;
                 }
-                memcpy(message_buffer, message, length);
+                memcpy(pre_message_buffer, message, length);
                 message_buffer_filled += length;
-                write_log("Message from the Client %s:%d with %d bytes -> message_buffer", length, newClient->remoteAddress().c_str(), newClient->remotePort());
+                log_info("Message from the Client %s:%d with %d bytes -> pre_message_buffer", length, newClient->remoteAddress().c_str(), newClient->remotePort());
                 // TODO
                 // Maybe done for now?
             }
@@ -182,22 +184,22 @@ int main(int argc, char **argv)
 
         newClient->onSocketClosed = [newClient, &client_CC](int errorCode)
         {
-            write_log("Socket closed: %s:%d -> %d", newClient->remoteAddress().c_str(), newClient->remotePort(), errorCode);
-            write_close(client_CC);
-            delete[] message_buffer[client_CC];
+            log_info("Socket closed: %s:%d -> %d", newClient->remoteAddress().c_str(), newClient->remotePort(), errorCode);
+            api_disconnect(client_CC);
+            delete[] pre_message_buffer[client_CC];
             // TODO
         };
     };
 
     // Bind the server to a port.
     tcpServer.Bind(listen_port, [](int errorCode, std::string errorMessage)
-                   { write_log("Binding failed: %d : %s", errorCode, errorMessage); });
+                   { log_info("Binding failed: %d : %s", errorCode, errorMessage); });
 
     // Start Listening the server.
     tcpServer.Listen([](int errorCode, std::string errorMessage)
-                     { write_log("Listening failed: %d : %s", errorCode, errorMessage); });
+                     { log_info("Listening failed: %d : %s", errorCode, errorMessage); });
 
-    write_log("TCP Server started on port %d", listen_port);
+    log_info("TCP Server started on port %d", listen_port);
 
     start_api();
 
