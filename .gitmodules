@@ -1,3 +1,9 @@
 [submodule "externals/async-sockets-cpp"]
 	path = externals/async-sockets-cpp
 	url = https://github.com/eminfedar/async-sockets-cpp
+[submodule "externals/magic_enum"]
+	path = externals/magic_enum
+	url = ghmj2:Neargye/magic_enum.git
+[submodule "externals/fmt"]
+	path = externals/fmt
+	url = ghmj2:fmtlib/fmt.git
