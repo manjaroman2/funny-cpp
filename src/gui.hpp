@@ -4,7 +4,7 @@
 #include <map>
 #include <functional>
 #include <fmt/core.h>
-#include <magic_enum_all.hpp>
+#include <magic_enum.hpp>
 
 enum Cursor
 {
@@ -143,11 +143,11 @@ public:
                     if (typing_command) {
                         wclear(main_win);
                         // waddstr(main_win, command_buffer.data());
-                        // waddnstr(main_win, command_buffer.data(), command_buffer.size());
+                        waddnstr(main_win, command_buffer.data(), command_buffer.size());
                         wrefresh(main_win);
-                        // waddstr(command_win, mode.text().c_str()); 
-                        // wrefresh(command_win);
-                        // command_buffer.clear();
+                        waddstr(command_win, mode.text().c_str()); 
+                        wrefresh(command_win);
+                        command_buffer.clear();
                         typing_command = false;
                         break;
                     }
