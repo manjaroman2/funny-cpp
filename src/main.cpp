@@ -8,7 +8,7 @@ TCPSocket<> *connections_map[MAX_CONNECTIONS];
 char *pre_message_buffer[MAX_CONNECTIONS];
 bool connection_accepted[MAX_CONNECTIONS];
 
-std::atomic<Magic> CC = 0; // Connections counter, points to the next free connection
+std::atomic<MAGIC_TYPE> CC = 0; // Connections counter, points to the next free connection
 
 TCPSocket<> create_socket(
     std::string ip, const int port, Magic connection)
@@ -146,7 +146,6 @@ int main(int argc, char **argv)
     if (argc > 1)
         listen_port = atoi(argv[1]);
     
-    printf("Starting server on port %d\n", listen_port);
     // Initialize server socket..
     TCPServer<> tcpServer;
 

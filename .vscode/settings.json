@@ -84,4 +84,7 @@
         "valarray": "cpp",
         "variant": "cpp"
     },
+    "search.exclude": {
+        "**/externals": true,
+    }
 }
