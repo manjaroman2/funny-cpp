@@ -1,8 +1,5 @@
 #include "tcpsocket.hpp"
 #include <stdarg.h>
-#include <fmt/core.h>
-#include <fmt/color.h>
-#include <magic_enum_all.hpp>
 
 /* ** API specification **
  *  The magic byte(s) encode
@@ -17,38 +14,34 @@
  *  A message is all the bytes following the ML. It has to be encodable by the MLENGTH.
  *  For example if MLENGTH is unsigned short, then the MAX_MESSAGE_LENGTH is 65535.
  */
-#define MAGIC_TYPE unsigned char    // 1 Byte -> 255 Magic Bytes
-#define MLEN_TYPE unsigned short      // 2 Bytes, encodes message length up to 65535 bytes = 64 KB
+#define Magic unsigned char    // 1 Byte -> 255 Magic Bytes
+#define MLength unsigned short // 2 Bytes, encodes message length up to 65535 bytes = 64 KB
+
+#define MAX_VAL(TYPE) (TYPE) ~0
+
+const char MAGIC_SIZE = sizeof(Magic);
+const char MLENGTH_SIZE = sizeof(MLength);
+const char PREFIX_SIZE = MAGIC_SIZE + MLENGTH_SIZE;
+const MLength MAX_MESSAGE_LENGTH = MAX_VAL(MLength);                // Max number encoded by MLENGTH
+const int MAX_FULL_MESSAGE_SIZE = MAX_MESSAGE_LENGTH + PREFIX_SIZE; // Max amount of bytes to store of accepted connection
+const int PRE_MESSAGE_BUFFER_SIZE = MAX_MESSAGE_LENGTH * 3;         // Max amount of bytes to store of non-accepted connection
+
+const Magic DISCONNECT = MAX_VAL(Magic);
+const Magic CONNECT = DISCONNECT - 1;
+const Magic LOG_INFO = CONNECT - 1;
+const Magic REQ_CONNECT = LOG_INFO - 1;
+const Magic ALLOW_CONNECT = REQ_CONNECT - 1;
+const Magic MESSAGE_BUFFER_OVERFLOW = ALLOW_CONNECT - 1;
+const Magic UPDATE_CONNECTION = MESSAGE_BUFFER_OVERFLOW - 1;
+const Magic CONNECTION_INFO = UPDATE_CONNECTION - 1;
+const Magic LOG_ERROR = CONNECTION_INFO - 1;
+
+const Magic MAX_CONNECTIONS = CONNECTION_INFO - 1;
 
 #define LOG_FILENO STDOUT_FILENO
 #define API_IN_FILENO STDIN_FILENO
 #define API_OUT_FILENO STDOUT_FILENO
 
-#define MAX_VAL(TYPE) (TYPE) ~0
-
-constexpr char MAGIC_SIZE = sizeof(MAGIC_TYPE);               // 
-constexpr char MLEN_SIZE = sizeof(MLEN_TYPE);                 // Bytes
-constexpr char PREFIX_SIZE = MAGIC_SIZE + MLEN_SIZE;          // 
-constexpr MLEN_TYPE MAX_MESSAGE_LENGTH = MAX_VAL(MLEN_TYPE);            // Max number encoded by MLength  
-constexpr int MAX_FULL_MESSAGE_SIZE = MAX_MESSAGE_LENGTH + PREFIX_SIZE; // Max amount of bytes to store of accepted connection
-constexpr int PRE_MESSAGE_BUFFER_SIZE = MAX_MESSAGE_LENGTH * 3;         // Max amount of bytes to store of non-accepted connection
-
-enum class MagicBytes { 
-    /* Connection magic */
-    DISCONNECT = MAX_VAL(MAGIC_TYPE),
-    CONNECT = DISCONNECT - 1, 
-    CONNECT_INFO = CONNECT - 1,  
-    REQ_CONNECT = CONNECT_INFO - 1,
-    ACCEPT_CONNECT = REQ_CONNECT - 1,
-    UPDATE_CONNECT = ACCEPT_CONNECT - 1,
-    /* Log magic */
-    LOG_INFO = UPDATE_CONNECT - 1, 
-    LOG_ERROR = LOG_INFO - 1,
-}; 
-
-constexpr MAGIC_TYPE MAX_CONNECTIONS = magic_enum::enum_count<MagicBytes>();
-
-/* 
 void hang_until_read(int fd, char *buf, int len)
 {
     int m = read(fd, buf, len);
@@ -102,7 +95,7 @@ char *make_buffer(Magic magic, char *message_buffer, MLength mlength)
     return buffer;
 }
 
-char *make_buffer_fmt(MagicBytes magic , const char *fmt, va_list va) 
+char *make_buffer_fmt(Magic magic, const char *fmt, va_list va)
 {
     // Read function args ...
     va_list va2;
@@ -132,8 +125,8 @@ char *make_buffer_fmt(MagicBytes magic , const char *fmt, va_list va)
     // return buffer;
 }
 
-template <typename... Arrr> 
-char *make_buffer_fmt_prepend(Magic magic, char *mprepend, MLength mprepend_length, const char *fmt, Arrr... args) 
+template <typename... Arrr>
+char *make_buffer_fmt_prepend(Magic magic, char *mprepend, MLength mprepend_length, const char *fmt, Arrr... args)
 {
     if (mprepend_length > MAX_MESSAGE_LENGTH)
     {
@@ -185,38 +178,31 @@ int write(int fd, Magic magic, const char *message)
     return hang_until_write(fd, buf, strlen(buf));
 }
 
-int write_fmt(int fd, Magic magic, const char *fmt, va_list va) 
+int write_fmt(int fd, Magic magic, const char *fmt, va_list va)
 {
-    char *buf = make_buffer_fmt(magic, fmt, va);  
+    char *buf = make_buffer_fmt(magic, fmt, va);
     return hang_until_write(fd, buf, strlen(buf));
 }
-*/ 
 
-template<typename ...Args>
-char* write_fmt(int fd, MagicBytes magic, const char* fmt, Args ...args) {
-    fmt::format_to_n()
+int log_info(const char *fmt, ...)
+{
+    va_list va;
+    va_start(va, fmt);
+    int ret = write_fmt(LOG_FILENO, LOG_INFO, fmt, va);
+    va_end(va);
+    return ret;
+}
+int log_err(const char *fmt, ...)
+{
+    va_list va;
+    va_start(va, fmt);
+    int ret = write_fmt(LOG_FILENO, LOG_ERROR, fmt, va);
+    va_end(va);
+    return ret;
 }
 
-template<typename ...Args> 
-int log_info(const char *fmt, Args ...args) { 
-    fmt::format_to_n()
-    va_list va;
-    va_start(va, fmt);
-    int ret = write_fmt(LOG_FILENO, LOG_INFO, fmt, va); 
-    va_end(va);
-    return ret;
-} 
-int log_err(const char *fmt, ...) { 
-    va_list va;
-    va_start(va, fmt);
-    int ret = write_fmt(LOG_FILENO, LOG_ERROR, fmt, va);  
-    va_end(va);
-    return ret;
-} 
-
-
 int api_message(Magic connection, const char *message) { return write(API_OUT_FILENO, connection, message); }
-template <typename... Arrr> 
+template <typename... Arrr>
 int api_message_fmt(Magic connection, const char *fmt, Arrr... args) { return write_fmt(API_OUT_FILENO, connection, fmt, std::forward<Arrr>(args)...); }
 int api_special(Magic magic, Magic magic_as_mlength)
 {
@@ -230,7 +216,7 @@ int api_special(Magic magic, Magic magic_as_mlength)
 int api_connect(Magic connection) { return api_special(CONNECT, connection); }
 int api_disconnect(Magic connection) { return api_special(DISCONNECT, connection); }
 int api_req_connect(Magic connection) { return api_special(REQ_CONNECT, connection); }
-template <typename... Arrr> 
+template <typename... Arrr>
 int api_connection_info(Magic connection, const char *fmt, Arrr... args)
 {
     char mprepend[1] = {(char)connection};

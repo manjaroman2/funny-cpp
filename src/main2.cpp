@@ -3,8 +3,8 @@
 
 int main(int argc, char **argv)
 {
-    Gui gui = Gui();
-    std::thread t1(&Gui::loop, &gui);
+    funny::Gui gui = funny::Gui();
+    std::thread t1(&funny::Gui::loop, &gui);
     // while (!gui.is_stopped())
     // {
     //     if (gui.is_resize())
