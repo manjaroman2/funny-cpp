@@ -58,42 +58,70 @@ namespace funny
 
             y_ratio = LINES / 3;
             x_ratio = COLS / 4;
-            chat_win = subwin(root_win, y_ratio, COLS, LINES - y_ratio, 0);
-            box(chat_win, 0, 0);
+            chat_win = subwin(root_win, y_ratio - 1, COLS, LINES - y_ratio - 1, 0);
+            // box(chat_win, 0, 0);
+            wborder(chat_win, 0, 0, 0, ' ', 0, 0, 0, 0);
             side_win = newwin(LINES - y_ratio, x_ratio, 0, COLS - x_ratio);
             box(side_win, 0, 0);
             side_panel = new_panel(side_win);
             main_win = subwin(root_win, LINES - y_ratio, COLS - x_ratio, 0, 0);
             box(main_win, 0, 0);
             command_win = newwin(1, COLS, LINES - 1, 0);
+            command_panel = new_panel(command_win);
 
             wbkgd(command_win, command_color_pair);
-
             waddstr(command_win, mode.text().c_str());
 
+            // hide_panel(command_panel);
             update_panels();
             wrefresh(root_win);
-            wrefresh(command_win);
+            // wrefresh(command_win);
 
-            keybinds['s'] = [this]()
-            { toggle_side(); };
-            keybinds['c'] = [this]()
-            { set_mode(Mode::CHAT); };
-            keybinds['q'] = [this]()
-            { close(); };
+            init_keybinds();
         };
         ~Gui()
         {
             endwin();
         }
-        void on_term_resize()
-        {
-            resizeterm(LINES, COLS);
-        }
 
-        bool is_resize()
+        void init_keybinds()
         {
-            return is_term_resized(COLS, LINES);
+            keybinds['s'] = [this]()
+            {
+                if (panel_hidden(side_panel))
+                {
+                    show_panel(side_panel);
+                    wresize(main_win, LINES - y_ratio, COLS - x_ratio);
+                }
+                else
+                {
+                    hide_panel(side_panel);
+                    wresize(main_win, LINES - y_ratio, COLS);
+                }
+                update_panels();
+                wclear(main_win);
+                box(main_win, 0, 0);
+                wrefresh(main_win);
+            };
+
+            keybinds['c'] = [this]()
+            {
+                set_mode(Mode::CHAT);
+            };
+
+            keybinds['q'] = [this]()
+            { close(); };
+
+            keybinds[':'] = [this]()
+            {
+                curs_set(CURSOR_VISIBLE);
+                typing_command = true;
+                wclear(command_win);
+                waddch(command_win, ':');
+                wrefresh(command_win);
+            };
+
+            // placeholder
         }
 
         bool key_esc()
@@ -112,22 +140,7 @@ namespace funny
                 return 1;
             case Mode::CHAT:
                 set_mode(Mode::COMMAND);
-                // chat_buffer.clear();
-                // wclear(chat_win);
-                // wmove(chat_win, 0, 0);
-                // box(chat_win, 0, 0);
-                // wrefresh(chat_win);
-                // wrefresh(root_win);
-                // wrefresh(main_win);
-                // wmove(chat_win, 1, 1);
-
-                // waddstr(command_win, mode.text().c_str());
-                // wclear(command_win);
-                // wmove(command_win, 0, 0);
-                // waddstr(command_win, mode.text().c_str());
-                // wrefresh(command_win);
                 break;
-                // return;
             default:
                 return 1;
             }
@@ -142,7 +155,6 @@ namespace funny
                 if (typing_command)
                 {
                     wclear(main_win);
-                    // waddstr(main_win, command_buffer.data());
                     waddnstr(main_win, command_buffer.data(), command_buffer.size());
                     wrefresh(main_win);
                     waddstr(command_win, mode.text().c_str());
@@ -153,11 +165,13 @@ namespace funny
                 }
                 break;
             case Mode::CHAT:
-                return 1;
                 wclear(main_win);
+                box(main_win, 0, 0);
+                wmove(main_win, 1, 1);
                 waddstr(main_win, chat_buffer.data());
                 chat_buffer.clear();
                 wclear(chat_win);
+                box(chat_win, 0, 0);
                 wrefresh(main_win);
                 wrefresh(chat_win);
                 break;
@@ -198,25 +212,9 @@ namespace funny
             case Mode::COMMAND:
                 if (!typing_command)
                 {
-                    if (ch == ':')
-                    {
-                        curs_set(CURSOR_VISIBLE);
-                        typing_command = true;
-                        wclear(command_win);
-                        waddch(command_win, ch);
-                        wrefresh(command_win);
-                        break;
-                    }
-                    else if (keybinds.find(ch) != keybinds.end())
-                    {
+                    if (keybinds.find(ch) != keybinds.end()) // TODO: Use perfect hashmap for performance
                         keybinds[ch]();
-                        break;
-                    }
-                    else
-                    {
-                        // Maybe add a message saying that the keybind doesn't exist
-                        break;
-                    }
+                    break;
                 }
                 command_buffer.push_back(ch);
                 waddch(command_win, ch);
@@ -229,7 +227,11 @@ namespace funny
                 wmove(chat_win, y, x);
                 waddch(chat_win, ch);
                 wrefresh(chat_win);
-                wrefresh(command_win);
+                top_panel(command_panel);
+                show_panel(command_panel);
+                update_panels();
+                // wrefresh(command_win);
+                // wrefresh(root_win);
                 break;
             default:
                 return 1;
@@ -242,7 +244,6 @@ namespace funny
             int ch, x, y;
             while (!stopped)
             {
-                // nodelay(root_win, TRUE);
                 ch = wgetch(root_win);
                 switch (ch)
                 {
@@ -250,7 +251,7 @@ namespace funny
                     if (key_esc())
                         return;
                     break;
-                case KEY_ENTER || 10 || 13 || KEY_F(3): // Enter
+                case 10: // Enter
                     if (key_enter())
                         return;
                     break;
@@ -279,25 +280,6 @@ namespace funny
             wrefresh(command_win);
         }
 
-        void toggle_side()
-        {
-            if (panel_hidden(side_panel))
-            {
-                show_panel(side_panel);
-                wresize(main_win, LINES - y_ratio, COLS - x_ratio);
-            }
-            else
-            {
-                hide_panel(side_panel);
-                wresize(main_win, LINES - y_ratio, COLS);
-            }
-            update_panels();
-            wclear(main_win);
-            box(main_win, 0, 0);
-            wrefresh(main_win);
-            // wrefresh(root_win);
-        }
-
         void close()
         {
             stopped = true;
@@ -310,7 +292,7 @@ namespace funny
 
     private:
         WINDOW *root_win, *chat_win, *side_win, *main_win, *command_win;
-        PANEL *side_panel;
+        PANEL *side_panel, *command_panel;
         Mode mode;
         bool typing_command = false;
         bool stopped = false;
