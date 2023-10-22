@@ -1,5 +1,6 @@
-#include "tcpsocket.hpp"
 #include <stdarg.h>
+#include <fmt/core.h>
+#include <assert.h>
 
 /* ** API specification **
  *  The magic byte(s) encode
@@ -14,33 +15,122 @@
  *  A message is all the bytes following the ML. It has to be encodable by the MLENGTH.
  *  For example if MLENGTH is unsigned short, then the MAX_MESSAGE_LENGTH is 65535.
  */
-#define Magic unsigned char    // 1 Byte -> 255 Magic Bytes
-#define MLength unsigned short // 2 Bytes, encodes message length up to 65535 bytes = 64 KB
-
-#define MAX_VAL(TYPE) (TYPE) ~0
-
-const char MAGIC_SIZE = sizeof(Magic);
-const char MLENGTH_SIZE = sizeof(MLength);
-const char PREFIX_SIZE = MAGIC_SIZE + MLENGTH_SIZE;
-const MLength MAX_MESSAGE_LENGTH = MAX_VAL(MLength);                // Max number encoded by MLENGTH
-const int MAX_FULL_MESSAGE_SIZE = MAX_MESSAGE_LENGTH + PREFIX_SIZE; // Max amount of bytes to store of accepted connection
-const int PRE_MESSAGE_BUFFER_SIZE = MAX_MESSAGE_LENGTH * 3;         // Max amount of bytes to store of non-accepted connection
-
-const Magic DISCONNECT = MAX_VAL(Magic);
-const Magic CONNECT = DISCONNECT - 1;
-const Magic LOG_INFO = CONNECT - 1;
-const Magic REQ_CONNECT = LOG_INFO - 1;
-const Magic ALLOW_CONNECT = REQ_CONNECT - 1;
-const Magic MESSAGE_BUFFER_OVERFLOW = ALLOW_CONNECT - 1;
-const Magic UPDATE_CONNECTION = MESSAGE_BUFFER_OVERFLOW - 1;
-const Magic CONNECTION_INFO = UPDATE_CONNECTION - 1;
-const Magic LOG_ERROR = CONNECTION_INFO - 1;
-
-const Magic MAX_CONNECTIONS = CONNECTION_INFO - 1;
-
+namespace Api
+{
 #define LOG_FILENO STDOUT_FILENO
 #define API_IN_FILENO STDIN_FILENO
 #define API_OUT_FILENO STDOUT_FILENO
+
+#define MagicType unsigned char
+// 1 Byte of magic can hold 255 states
+#define MessageLengthType unsigned short
+    // 2 Bytes, encodes message length up to 65535 bytes = 64 KB
+
+#define MAX_VAL(TYPE) (TYPE) ~0
+
+    const char MAGIC_TYPE_SIZE = sizeof(MagicType);
+    const char MESSAGE_LENGTH_TYPE_SIZE = sizeof(MessageLengthType);
+    const char PREFIX_SIZE = MAGIC_TYPE_SIZE + MESSAGE_LENGTH_TYPE_SIZE;
+    // Max number encoded by MessageLengthType
+    const MessageLengthType MAX_MESSAGE_LENGTH = MAX_VAL(MessageLengthType);
+    // Max amount of bytes to store of accepted connection
+    const int MAX_FULL_MESSAGE_SIZE = MAX_MESSAGE_LENGTH + PREFIX_SIZE;
+    const int MAX_PRE_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH * 4;
+    // Max amount of bytes to store of non-accepted connection
+    // const int PRE_MESSAGE_BUFFER_SIZE = MAX_MESSAGE_LENGTH * 3;
+
+    /*
+    const Magic DISCONNECT = MAX_VAL(MagicType);
+    const Magic CONNECT = DISCONNECT - 1;
+    const Magic LOG_INFO = CONNECT - 1;
+    const Magic REQ_CONNECT = LOG_INFO - 1;
+    const Magic ALLOW_CONNECT = REQ_CONNECT - 1;
+    const Magic MESSAGE_BUFFER_OVERFLOW = ALLOW_CONNECT - 1;
+    const Magic UPDATE_CONNECTION = MESSAGE_BUFFER_OVERFLOW - 1;
+    const Magic CONNECTION_INFO = UPDATE_CONNECTION - 1;
+    const Magic LOG_ERROR = CONNECTION_INFO - 1;
+    const Magic MAX_CONNECTIONS = CONNECTION_INFO - 1;
+    */
+
+    enum Magic
+    {
+        DISCONNECT = MAX_VAL(MagicType),
+        CONNECT = DISCONNECT - 1,
+
+        REQUEST_CONNECT = CONNECT - 1,
+        ACCEPT_CONNECT = REQUEST_CONNECT - 1,
+        CREATE_CONNECT = ACCEPT_CONNECT - 1,
+
+        LOG_INFO = CREATE_CONNECT - 1,
+        LOG_ERROR = LOG_INFO - 1,
+
+        MAX_CONNECTIONS = LOG_ERROR - 1
+    };
+
+    int hang_until_write_len(int fd, char *buf, int len)
+    {
+        int m = write(fd, buf, len);
+        int d = len - m;
+        while (d > 0)
+        {
+            buf += m;
+            m = write(fd, buf, d);
+            d -= m;
+        }
+        return len;
+    }
+    int hang_until_write(int fd, char *buf) { return hang_until_write_len(fd, buf, strlen(buf)); }
+
+    // Api out calls
+    int api_req_connect(MagicType cn) { return hang_until_write(API_OUT_FILENO, make_buffer_special(Magic::REQUEST_CONNECT, cn)); }
+
+    // Log calls
+    template <typename... T>
+    inline int log(MagicType log, char *fmt, T &&...args)
+    {
+        char buf[MAX_MESSAGE_LENGTH];
+        int n = fmt::format_to_n(buf, MAX_MESSAGE_LENGTH, fmt, args...);
+        assert(n <= MAX_MESSAGE_LENGTH);
+        return hang_until_write_len(API_OUT_FILENO, make_buffer(log, buf, n), n);
+    }
+    template <typename... T>
+    inline int log_info(char *fmt, T &&...args) { return log(LOG_INFO, fmt, args...); }
+    template <typename... T>
+    inline int log_error(char *fmt, T &&...args) { return log(LOG_ERROR, fmt, args...); }
+
+    // Api calls
+    inline int api(MagicType connId, const char *message, MessageLengthType length) { return hang_until_write_len(API_OUT_FILENO, make_buffer(connId, message, length), length + PREFIX_SIZE); }
+    inline int api_message(MagicType connId, const char *message, MessageLengthType length) { return api(connId, message, length); }
+
+    inline int api_special(MagicType mag, MagicType mag_as_message_length) { return hang_until_write_len(API_OUT_FILENO, make_buffer_special(mag, mag_as_message_length), PREFIX_SIZE); }
+    inline int api_create_connect(MagicType connId) { return api_special(Magic::CREATE_CONNECT, connId); }
+
+    // Make buffer methods
+    char *make_buffer_special(MagicType mag, MagicType mag_as_message_length)
+    {
+        char prefix_buffer[PREFIX_SIZE];
+        memcpy(prefix_buffer, &mag, MAGIC_TYPE_SIZE);
+        (*prefix_buffer) += MAGIC_TYPE_SIZE;
+        memcpy(prefix_buffer, &mag_as_message_length, MESSAGE_LENGTH_TYPE_SIZE);
+        return prefix_buffer;
+    }
+
+    char *make_buffer(MagicType mag, char *message_buffer, MessageLengthType message_length)
+    {
+        if (message_length > MAX_MESSAGE_LENGTH)
+        {
+            perror("[make_buffer] message length is bigger than " + MAX_MESSAGE_LENGTH);
+            exit(1);
+        }
+        char full_message_buffer[PREFIX_SIZE + message_length];
+        memcpy(full_message_buffer, &mag, MAGIC_TYPE_SIZE);
+        (*full_message_buffer) += MAGIC_TYPE_SIZE;
+        memcpy(full_message_buffer, &message_length, MESSAGE_LENGTH_TYPE_SIZE);
+        (*full_message_buffer) += MESSAGE_LENGTH_TYPE_SIZE;
+        memcpy(full_message_buffer, message_buffer, message_length);
+        return full_message_buffer;
+    }
+}
 
 void hang_until_read(int fd, char *buf, int len)
 {
@@ -52,19 +142,6 @@ void hang_until_read(int fd, char *buf, int len)
         m = read(fd, buf, d);
         d -= m;
     }
-}
-
-int hang_until_write(int fd, char *buf, int len)
-{
-    int m = write(fd, buf, len);
-    int d = len - m;
-    while (d > 0)
-    {
-        buf += m;
-        m = write(fd, buf, d);
-        d -= m;
-    }
-    return len;
 }
 
 void hang_until_socket_send(TCPSocket<> *socket, char *buf, int len)
@@ -79,22 +156,7 @@ void hang_until_socket_send(TCPSocket<> *socket, char *buf, int len)
     }
 }
 
-char *make_buffer(Magic magic, char *message_buffer, MLength mlength)
-{
-    if (mlength > MAX_MESSAGE_LENGTH)
-    {
-        perror("[make_buffer] message length is bigger than " + MAX_MESSAGE_LENGTH);
-        exit(1);
-    }
-    char *buffer = new char[MAGIC_SIZE + MLENGTH_SIZE + mlength];
-    memcpy(buffer, &magic, MAGIC_SIZE);
-    (*buffer) += MAGIC_SIZE;
-    memcpy(buffer, &mlength, MLENGTH_SIZE);
-    (*buffer) += MLENGTH_SIZE;
-    memcpy(buffer, message_buffer, mlength);
-    return buffer;
-}
-
+/*
 char *make_buffer_fmt(Magic magic, const char *fmt, va_list va)
 {
     // Read function args ...
@@ -172,11 +234,7 @@ char *make_buffer_fmt_prepend(Magic magic, char *mprepend, MLength mprepend_leng
     // return buffer;
 }
 
-int write(int fd, Magic magic, const char *message)
-{
-    char *buf = make_buffer(magic, (char *)message, strlen(message));
-    return hang_until_write(fd, buf, strlen(buf));
-}
+
 
 int write_fmt(int fd, Magic magic, const char *fmt, va_list va)
 {
@@ -223,3 +281,4 @@ int api_connection_info(Magic connection, const char *fmt, Arrr... args)
     char *buf = make_buffer_fmt_prepend(CONNECTION_INFO, mprepend, 1, fmt, std::forward<Arrr>(args)...);
     return hang_until_write(API_OUT_FILENO, buf, strlen(buf));
 }
+ */

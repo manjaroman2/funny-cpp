@@ -1,10 +1,18 @@
+#include <termios.h>
 #include <ncurses.h>
 #include <panel.h>
 #include <string>
 #include <map>
 #include <functional>
+// #include <stdlib.h>
+// #include <stdio.h>
+#include <unistd.h>
 #include <fmt/core.h>
 #include <magic_enum.hpp>
+
+#ifndef CTRL
+#define CTRL(x) ((x) & 037)
+#endif
 
 namespace funny
 {
@@ -58,9 +66,9 @@ namespace funny
 
             y_ratio = LINES / 3;
             x_ratio = COLS / 4;
-            chat_win = subwin(root_win, y_ratio - 1, COLS, LINES - y_ratio - 1, 0);
+            chat_win = subwin(root_win, y_ratio - 1, COLS, LINES - y_ratio, 0);
             // box(chat_win, 0, 0);
-            wborder(chat_win, 0, 0, 0, ' ', 0, 0, 0, 0);
+            wborder(chat_win, 0, 0, 0, ' ', 0, 0, ' ', ' ');
             side_win = newwin(LINES - y_ratio, x_ratio, 0, COLS - x_ratio);
             box(side_win, 0, 0);
             side_panel = new_panel(side_win);
@@ -171,9 +179,11 @@ namespace funny
                 waddstr(main_win, chat_buffer.data());
                 chat_buffer.clear();
                 wclear(chat_win);
-                box(chat_win, 0, 0);
+                wborder(chat_win, 0, 0, 0, ' ', 0, 0, ' ', ' ');
+                // box(chat_win, 0, 0);
                 wrefresh(main_win);
                 wrefresh(chat_win);
+                wrefresh(root_win);
                 break;
             default:
                 return 1;
@@ -239,37 +249,73 @@ namespace funny
             return 0;
         }
 
-        void loop()
+        int handle_ch(char ch)
         {
-            int ch, x, y;
-            while (!stopped)
+            waddstr(main_win, fmt::format("{}", ch).c_str());
+            wrefresh(main_win);
+            switch (ch)
             {
-                ch = wgetch(root_win);
-                switch (ch)
-                {
-                case 27: // Esc
-                    if (key_esc())
-                        return;
-                    break;
-                case 10: // Enter
-                    if (key_enter())
-                        return;
-                    break;
-                case KEY_BACKSPACE: // Backspace
-                    if (key_backspace())
-                        return;
-                    break;
-                default:
-                    if (ch < 32 || ch > 126)
-                    { // Not a printable character
-                        waddch(main_win, fmt::format("{}", ch).c_str()[0]);
-                        break;
-                    }
-                    if (key_printable(ch))
-                        return;
+            case 27: // Esc
+                return key_esc();
+            case 10: // Enter
+                return key_enter();
+            case KEY_BACKSPACE: // Backspace
+                return key_backspace();
+            default:
+                if (ch < 32 || ch > 126)
+                { // Not a printable character
+
                     break;
                 }
+                return key_printable(ch);
             }
+            return 0;
+        }
+
+        void loop()
+        {
+            struct termios oldSettings, newSettings;
+
+            tcgetattr(fileno(stdin), &oldSettings);
+            newSettings = oldSettings;
+            newSettings.c_lflag &= (~ICANON & ~ECHO);
+            tcsetattr(fileno(stdin), TCSANOW, &newSettings);
+
+            fd_set set;
+            struct timeval tv;
+
+            tv.tv_sec = 10;
+            tv.tv_usec = 0;
+
+            // int ch, x, y;
+            while (!stopped)
+            {
+                // ch = wgetch(root_win);
+
+                FD_ZERO(&set);
+                FD_SET(fileno(stdin), &set);
+
+                int res = select(fileno(stdin) + 1, &set, NULL, NULL, &tv);
+
+                if (res > 0)
+                {
+                    char c;
+                    // printf("Input available\n");
+                    read(fileno(stdin), &c, 1);
+                    if (handle_ch(c))
+                        break;
+                }
+                else if (res < 0)
+                {
+                    perror("select error");
+                    break;
+                }
+                else
+                {
+                    // printf("Select timeout\n");
+                }
+            }
+            tcsetattr(fileno(stdin), TCSANOW, &oldSettings);
         }
 
         void set_mode(Mode new_mode)
@@ -280,15 +326,7 @@ namespace funny
             wrefresh(command_win);
         }
 
-        void close()
-        {
-            stopped = true;
-        }
-
-        bool is_stopped()
-        {
-            return stopped;
-        }
+        void close() { stopped = true; }
 
     private:
         WINDOW *root_win, *chat_win, *side_win, *main_win, *command_win;
