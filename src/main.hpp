@@ -1,46 +1,48 @@
-#include "api.hpp";
+#include "api.hpp"
 #include "tcpsocket.hpp"
 #include <mutex>
 #include <functional>
+#include <vector>
+#include <algorithm>
+#include <stdint.h>
 
 namespace Api
 {
-    // TODO USE VECTOR OR POINTER TO ELEMENT IN ARRAY IDKKKKK
-    std::array<Connection, MAX_CONNECTIONS>
-        std::mutex connectionsLock;
 
     class Connection
     {
     private:
-        MagicType id;
-        std::mutex id_lock;
-        std::string ip;
-        int port;
-        std::mutex acceptedLock;
         std::array<char, MAX_PRE_MESSAGE_LENGTH> preMessageBuffer;
 
+        MagicType id;
+        std::mutex id_lock;
+        bool closed = false;
+        std::mutex closedLock;
+        bool accepted = false;
+        std::mutex acceptedLock;
+
     public:
+        std::string ip;
+        int port;
         TCPSocket<> *socket;
-        bool accepted;
+        char *preMessageBufferFreeSpace = preMessageBuffer.begin();
+        std::mutex preMessageBufferLock;
+
         Connection(std::string ip, int port)
         {
+            // preMessageBuffer.begin()
             this->ip = ip;
             this->port = port;
         }
         ~Connection()
         {
-            Connection *conn;
-            connectionsLock.lock();
-            id_lock.lock();
-            if (id < connections.size() - 1)
-                std::swap(connections[id], connections.back());
-
-            connectionsLock.unlock();
+            if (!isClosed())
+                socket->Close();
         }
         void createSocket()
         {
-            socket = &TCPSocket<>([](int errorCode, std::string errorMessage)
-                                  { log_info("Socket creation error: %d : %s", errorCode, errorMessage); });
+            (*socket) = TCPSocket<>([](int errorCode, std::string errorMessage)
+                                    { log_info("Socket creation error: %d : %s", errorCode, errorMessage); });
 
             socket->onRawMessageReceived = [this](const char *message, int length)
             {
@@ -49,100 +51,144 @@ namespace Api
 
             socket->onSocketClosed = [this](int errorCode)
             {
-                delete this;
-                // api_disconnect(connection);
+                log_info("Connection %d closed: %d", getId(), errorCode);
+                this->setClosed();
             };
 
             socket->Connect(
                 ip, port, [this] { // TODO Send accept to api out
+                    log_info("Connection %d accepted", getId());
+                    this->setAccepted();
                 },
                 [this](int errorCode, std::string errorMessage)
                 {
                     // TODO Connection refused
-                    // log_info("Connection failed: %d : %s", errorCode, errorMessage);
+                    this->setAccepted(false);
+                    log_info("Connection failed: %d : %s", errorCode, errorMessage);
                 });
         }
-        // Returns the connection id
-        MagicType create()
-        {
-            connectionsLock.lock();
-            setId(connections.size());
-            connections[id] = this;
-            connectionsLock.unlock();
-            return id;
-        }
+
         void setId(MagicType newId)
         {
             id_lock.lock();
             id = newId;
             id_lock.unlock();
         }
+
         MagicType getId()
         {
             MagicType idCopy;
             id_lock.lock();
             idCopy = id;
             id_lock.unlock();
+            return idCopy;
         }
+
         void sendMessage(char *messageBuffer, MessageLengthType messageLength)
         {
-            hang_until_socket_send(socket, messageBuffer, messageLength);
+            buffer_send_socket_all(socket, messageBuffer, messageLength);
         }
-        // bool isAccepted()
-        // {
-        //     bool acceptedCopy;
-        //     acceptedLock.lock();
-        //     acceptedCopy = accepted;
-        //     acceptedLock.unlock();
-        //     return acceptedCopy;
-        // }
 
-        void accept()
+        void setClosed()
+        {
+            closedLock.lock();
+            closed = true;
+            closedLock.unlock();
+        }
+
+        bool isClosed()
+        {
+            bool closedCopy;
+            closedLock.lock();
+            closedCopy = closed;
+            closedLock.unlock();
+            return closedCopy;
+        }
+
+        void setAccepted(bool newAccepted = true)
         {
             acceptedLock.lock();
-            accepted = true;
+            accepted = newAccepted;
             acceptedLock.unlock();
+        }
+
+        bool isAccepted()
+        {
+            bool acceptedCopy;
+            acceptedLock.lock();
+            acceptedCopy = accepted;
+            acceptedLock.unlock();
+            return acceptedCopy;
         }
 
         template <typename Func>
         void iteratePreMessageBufferChunks(Func func)
         {
-            size_t size = preMessageBuffer.size();
+            preMessageBufferLock.lock();
+            int m = ((uintptr_t)preMessageBufferFreeSpace) / MAX_MESSAGE_LENGTH;
             char *iter = preMessageBuffer.begin();
-            if (size > MAX_MESSAGE_LENGTH)
+            for (int i = 0; i < m; i++)
             {
-                for (; iter < size - MAX_MESSAGE_LENGTH; iter += MAX_MESSAGE_LENGTH)
-                {
-                    func(iter, MAX_MESSAGE_LENGTH);
-                }
+                iter += i * MAX_MESSAGE_LENGTH;
+                func(iter, MAX_MESSAGE_LENGTH);
             }
-            if (iter % MAX_MESSAGE_LENGTH)
+            int n = ((uintptr_t)preMessageBufferFreeSpace) - m * MAX_MESSAGE_LENGTH;
+            if (n > 0)
             {
-                func(iter, iter % MAX_MESSAGE_LENGTH);
+                func(iter, n);
             }
+            preMessageBufferLock.unlock();
+        }
+
+        void addToPreMessageBuffer(const char *buffer, int length)
+        {
+            preMessageBufferLock.lock();
+            int d = length - (preMessageBuffer.end() - preMessageBufferFreeSpace);
+            if (d > 0)
+            {
+                log_info("Message buffer overflow from %s:%d by %d bytes", ip, port, d);
+                return;
+            }
+            memcpy(preMessageBufferFreeSpace, buffer, length);
+            preMessageBufferFreeSpace += length;
+            preMessageBufferLock.unlock();
         }
     };
 
-    // template <class T, class Func>
-    // void do_chunks(T container, size_t K, Func func)
-    // {
-    //     size_t size = container.size();
-    //     size_t i = 0;
+    std::vector<Connection> connections;
+    std::mutex connectionsLock;
 
-    //     // do we have more than one chunk?
-    //     if (size > K)
-    //     {
-    //         // handle all but the last chunk
-    //         for (; i < size - K; i += K)
-    //         {
-    //             func(container, i, i + K);
-    //         }
-    //     }
+    void connection_destroy_by_id(MagicType connId)
+    {
+        connectionsLock.lock();
+        if (connId < connections.size() - 1)
+            std::iter_swap(connections.begin() + connId, connections.end() - 1);
+        // std::swap(connections[connId], connections.back());
+        connections.pop_back();
+        connectionsLock.unlock();
+    }
 
-    //     // if we still have a part of a chunk left, handle it
-    //     if (i % K)
-    //     {
-    //         func(container, i, i + i % K);
-    //     }
-    // }
+    void connection_destroy(Connection connection)
+    {
+        connectionsLock.lock();
+        MagicType id = connection.getId();
+        if (id < connections.size() - 1)
+        {
+            std::iter_swap(connections.begin() + id, connections.end() - 1);
+        }
+        // std::swap(connections[id], connections.back());
+        connections.pop_back();
+        connectionsLock.unlock();
+    }
+
+    // Returns the connection id
+    MagicType connnection_register(Connection *connection)
+    {
+        connectionsLock.lock();
+        MagicType id = connections.size();
+        connection->setId(id);
+        connections.push_back(*connection);
+        connectionsLock.unlock();
+        return id;
+    }
 }

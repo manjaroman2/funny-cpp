@@ -1,4 +1,4 @@
-externals/
+# externals/
 build/
 env/
 other_stuff/

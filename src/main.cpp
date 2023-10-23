@@ -5,6 +5,115 @@
 
 namespace Api
 {
+    // Start while(true) loop
+    void start_api()
+    {
+        char magicBuffer[MAGIC_TYPE_SIZE];
+        char messageLengthBuffer[MESSAGE_LENGTH_TYPE_SIZE];
+        char messageBuffer[MAX_MESSAGE_LENGTH];
+        MessageLengthType messageLength;
+        MagicType magic, connId;
+
+        Connection *connection = nullptr;
+
+        std::string ip;
+        int port;
+        while (true)
+        {
+            buffer_read_all(STDIN_FILENO, magicBuffer, MAGIC_TYPE_SIZE);
+            buffer_read_all(STDIN_FILENO, messageLengthBuffer, MESSAGE_LENGTH_TYPE_SIZE);
+            // Convert 2 Bytes to ushort
+            memcpy(&messageLength, &messageLengthBuffer, MESSAGE_LENGTH_TYPE_SIZE);
+            buffer_read_all(STDIN_FILENO, messageBuffer, messageLength);
+            memcpy(&magic, magicBuffer, MAGIC_TYPE_SIZE);
+            switch (magic)
+            {
+            case Magic::CONNECT:
+            {
+                connectionsLock.lock();
+                if (connections.size() == MAX_CONNECTIONS)
+                {
+                    connectionsLock.unlock();
+                    log_error("  Connection limit reached (%d)", MAX_CONNECTIONS);
+                    break;
+                }
+                connectionsLock.unlock();
+                ip = strtok(messageBuffer, ":");
+                port = atoi(strtok(NULL, ":"));
+                // const std::string &r = std::string("test");
+                const Connection &a = Connection(ip, port);
+
+                // connection = Connection(ip, port);
+                connnection_register(connection);
+                api_create_connect(connection->getId());
+                break;
+            }
+            case Magic::DISCONNECT:
+            {
+                connId = (MagicType)messageLength;
+                connectionsLock.lock();
+                if (connId > connections.size() - 1)
+                {
+                    connectionsLock.unlock();
+                    log_error("  Connection %d is invalid", connId);
+                    break;
+                }
+                connectionsLock.unlock();
+                connection_destroy_by_id(connId);
+                break;
+            }
+            case Magic::ACCEPT_CONNECT: // Need this to accept incoming messages
+            {
+                connId = (MagicType)messageLength;
+                connectionsLock.lock();
+                if (connId > connections.size() - 1)
+                {
+                    connectionsLock.unlock();
+                    log_error("  Connection %d is invalid", connId);
+                    break;
+                }
+                if (connections[connId].isAccepted())
+                {
+                    connectionsLock.unlock();
+                    log_error("  Connection %d was already accepted", connId);
+                    break;
+                }
+                connection = &connections[connId];
+                connectionsLock.unlock();
+                connection->setAccepted();
+                connection->iteratePreMessageBufferChunks([&connId](char *iter, MessageLengthType length)
+                                                          { api_message(connId, iter, length); });
+                break;
+            }
+            case Magic::LOG_INFO || Magic::LOG_ERROR:
+            {
+                // Client should not send log messages
+                break;
+            }
+            default: // Send message to one of connected sockets
+            {
+                connId = magic;
+                connectionsLock.lock();
+                if (connId > connections.size() - 1)
+                {
+                    connectionsLock.unlock();
+                    log_error("  Connection %d is invalid", connId);
+                    break;
+                }
+                if (connections[connId].isAccepted())
+                {
+                    connectionsLock.unlock();
+                    log_error("  Connection %d is not accepted", connId);
+                    break;
+                }
+                connection = &connections[connId];
+                connectionsLock.unlock();
+                connection->sendMessage(messageBuffer, messageLength);
+                break;
+            }
+            }
+        } // while (true)
+    }
 
     int main(int argc, char **argv)
     {
@@ -20,29 +129,21 @@ namespace Api
         {
             // log_info("New client: [%s:%d]", newClient->remoteAddress().c_str(), newClient->remotePort());
             Connection connection = Connection(newClient->remoteAddress().c_str(), newClient->remotePort());
-            api_req_connect(connection.create());
+            MagicType id = connnection_register(&connection);
+            api_req_connect(id);
             newClient->onRawMessageReceived = [newClient, &connection](const char *message, int length)
             {
                 if (length > MAX_MESSAGE_LENGTH) // Incoming message is too long, abort
                     return newClient->Close();
                 // Connection accepted
-                if (connection.accepted)
-                    api_message(connection.getId(), message);
+                if (connection.isAccepted())
+                    api_message(connection.getId(), message, length);
                 else
                 { // Save messages to buffer while connection is not accepted
-                    int d = message_buffer_filled + length - MAX_MESSAGE_LENGTH;
-                    if (d > 0)
-                    {
-                        log_info("Message buffer overflow from %s:%d by %d bytes", newClient->remoteAddress().c_str(), newClient->remotePort(), d);
-                        // newClient->Send(make_buffer_fmt(MESSAGE_BUFFER_OVERFLOW, "Message buffer overflow by %d bytes", d));
-                        newClient->Close();
-                        return;
-                    }
-                    memcpy(pre_message_buffer, message, length);
-                    message_buffer_filled += length;
-                    log_info("Message from the Client %s:%d with %d bytes -> pre_message_buffer", length, newClient->remoteAddress().c_str(), newClient->remotePort());
+                    connection.addToPreMessageBuffer(message, length);
+                    log_info("Message from the Client %s:%d with %d bytes into preMessageBuffer",
+                             connection.ip, connection.port, length);
                     // TODO
-                    // Maybe done for now?
                 }
             };
 
@@ -78,114 +179,4 @@ namespace Api
         return 0;
     }
 
-    // Start while(true) loop
-    void start_api()
-    {
-        char magicBuffer[MAGIC_TYPE_SIZE];
-        char messageLengthBuffer[MESSAGE_LENGTH_TYPE_SIZE];
-        char messageBuffer[MAX_MESSAGE_LENGTH];
-        MessageLengthType messageLength;
-        MagicType magic, connId;
-
-        Connection *connection;
-
-        std::string ip;
-        int port;
-        while (true)
-        {
-            hang_until_read(STDIN_FILENO, magicBuffer, MAGIC_TYPE_SIZE);
-            hang_until_read(STDIN_FILENO, messageLengthBuffer, MESSAGE_LENGTH_TYPE_SIZE);
-            // Convert 2 Bytes to ushort
-            memcpy(&messageLength, &messageLengthBuffer, MESSAGE_LENGTH_TYPE_SIZE);
-            hang_until_read(STDIN_FILENO, messageBuffer, messageLength);
-            memcpy(&magic, magicBuffer, MAGIC_TYPE_SIZE);
-            switch (magic)
-            {
-            case Magic::CONNECT:
-                connectionsLock.lock();
-                if (connections.size() == MAX_CONNECTIONS)
-                {
-                    connectionsLock.unlock();
-                    log_error("  Connection limit reached");
-                    break;
-                }
-                connectionsLock.unlock();
-                ip = strtok(messageBuffer, ":");
-                port = atoi(strtok(NULL, ":"));
-                connection = &Connection(ip, port);
-                connection->create();
-                api_create_connect(connection->getId());
-                break;
-            case Magic::DISCONNECT:
-                connId = (MagicType)messageLength;
-                connectionsLock.lock();
-                if (connId > connections.size() - 1)
-                {
-                    connectionsLock.unlock();
-                    log_error("  Connection %d is invalid", connId);
-                    break;
-                }
-                if (connId < connections.size() - 1)
-                    std::swap(connections[connId], connections.back());
-                delete connections.back();
-                connectionsLock.unlock();
-                break;
-            case Magic::ACCEPT_CONNECT: // Need this to accept incoming messages
-                connId = (MagicType)messageLength;
-                connectionsLock.lock();
-                if (connId > connections.size() - 1)
-                {
-                    connectionsLock.unlock();
-                    log_error("  Connection %d is invalid", connId);
-                    break;
-                }
-                if (connections[connId].accepted)
-                {
-                    connectionsLock.unlock();
-                    log_error("  Connection %d was already accepted", connId);
-                    break;
-                }
-                connection = &connections[connId];
-                connectionsLock.unlock();
-                connection->accept();
-
-                connection->iteratePreMessageBufferChunks([&connId](char *iter, MessageLengthType length)
-                                                          { api_message(connId, iter, length); });
-                break;
-            case Magic::LOG_INFO || Magic::LOG_ERROR:
-                // Client should not send log messages
-                break;
-            default: // Send message to one of connected sockets
-                connId = magic;
-                connectionsLock.lock();
-                if (connId > connections.size() - 1)
-                {
-                    connectionsLock.unlock();
-                    log_error("  Connection %d is invalid", connId);
-                    break;
-                }
-                if (connections[connId]->isAccepted())
-                {
-                    connectionsLock.unlock();
-                    log_error("  Connection %d is not accepted", connId);
-                    break;
-                }
-                connection = &connections[connId];
-                connectionsLock.unlock();
-                connection->sendMessage(messageBuffer, messageLength);
-                break;
-            }
-            // case CONNECTION_INFO:
-            //     client_CC = (Magic)mlength;
-            //     if (client_CC > CC - 1) // We save another Byte
-            //     {
-            //         log_info("  Connection number %d is invalid", client_CC);
-            //         break;
-            //     }
-            //     ip = connections_map[client_CC]->remoteAddress().c_str();
-            //     port = connections_map[client_CC]->remotePort();
-            //     api_connection_info(client_CC, "%s:%d", ip, port);
-            //     break;
-        }
-    }
 }

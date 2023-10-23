@@ -1,4 +1,4 @@
-add_executable(${PROJECT_NAME} main.cpp main.hpp)
+add_executable(${PROJECT_NAME} main.cpp main.hpp api.hpp)
 # add_executable(${PROJECT_NAME} main2.cpp gui.hpp)
 
 target_link_libraries(${PROJECT_NAME} 
