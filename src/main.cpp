@@ -19,15 +19,15 @@ namespace Api
         tcpServer.onNewConnection = [](TCPSocket<> *newClient)
         {
             // log_info("New client: [%s:%d]", newClient->remoteAddress().c_str(), newClient->remotePort());
-            PreConnection connection = PreConnection(newClient->remoteAddress().c_str(), newClient->remotePort());
+            Connection connection = Connection(newClient->remoteAddress().c_str(), newClient->remotePort());
             api_req_connect(connection.create());
             newClient->onRawMessageReceived = [newClient, &connection](const char *message, int length)
             {
                 if (length > MAX_MESSAGE_LENGTH) // Incoming message is too long, abort
                     return newClient->Close();
                 // Connection accepted
-                if (connection.accepted())
-                    api_message(client_CC, message);
+                if (connection.accepted)
+                    api_message(connection.getId(), message);
                 else
                 { // Save messages to buffer while connection is not accepted
                     int d = message_buffer_filled + length - MAX_MESSAGE_LENGTH;
@@ -87,7 +87,6 @@ namespace Api
         MessageLengthType messageLength;
         MagicType magic, connId;
 
-        PreConnection *preConnection;
         Connection *connection;
 
         std::string ip;
@@ -113,9 +112,9 @@ namespace Api
                 connectionsLock.unlock();
                 ip = strtok(messageBuffer, ":");
                 port = atoi(strtok(NULL, ":"));
-                preConnection = &PreConnection(ip, port);
-                preConnection->create();
-                api_create_connect(preConnection->getId());
+                connection = &Connection(ip, port);
+                connection->create();
+                api_create_connect(connection->getId());
                 break;
             case Magic::DISCONNECT:
                 connId = (MagicType)messageLength;
@@ -127,7 +126,7 @@ namespace Api
                     break;
                 }
                 if (connId < connections.size() - 1)
-                    connections[connId].swap(connections.back());
+                    std::swap(connections[connId], connections.back());
                 delete connections.back();
                 connectionsLock.unlock();
                 break;
@@ -140,17 +139,18 @@ namespace Api
                     log_error("  Connection %d is invalid", connId);
                     break;
                 }
-                if (connections[connId].accepted())
+                if (connections[connId].accepted)
                 {
                     connectionsLock.unlock();
                     log_error("  Connection %d was already accepted", connId);
                     break;
                 }
-                preConnection = &connections[connId];
+                connection = &connections[connId];
                 connectionsLock.unlock();
+                connection->accept();
 
-                preConnection->iteratePreMessageBufferChunks([&connId](char *iter, MessageLengthType length)
-                                                             { api_message(connId, iter, length); });
+                connection->iteratePreMessageBufferChunks([&connId](char *iter, MessageLengthType length)
+                                                          { api_message(connId, iter, length); });
                 break;
             case Magic::LOG_INFO || Magic::LOG_ERROR:
                 // Client should not send log messages

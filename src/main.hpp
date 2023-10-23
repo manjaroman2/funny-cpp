@@ -5,9 +5,9 @@
 
 namespace Api
 {
+    // TODO USE VECTOR OR POINTER TO ELEMENT IN ARRAY IDKKKKK
     std::array<Connection, MAX_CONNECTIONS>
-        connections;
-    std::mutex connectionsLock;
+        std::mutex connectionsLock;
 
     class Connection
     {
@@ -16,9 +16,12 @@ namespace Api
         std::mutex id_lock;
         std::string ip;
         int port;
+        std::mutex acceptedLock;
+        std::array<char, MAX_PRE_MESSAGE_LENGTH> preMessageBuffer;
 
     public:
         TCPSocket<> *socket;
+        bool accepted;
         Connection(std::string ip, int port)
         {
             this->ip = ip;
@@ -26,7 +29,13 @@ namespace Api
         }
         ~Connection()
         {
-            socket->Close();
+            Connection *conn;
+            connectionsLock.lock();
+            id_lock.lock();
+            if (id < connections.size() - 1)
+                std::swap(connections[id], connections.back());
+
+            connectionsLock.unlock();
         }
         void createSocket()
         {
@@ -40,16 +49,16 @@ namespace Api
 
             socket->onSocketClosed = [this](int errorCode)
             {
+                delete this;
                 // api_disconnect(connection);
             };
 
             socket->Connect(
-                ip, port, [this]
-                { this -
-                      api_connect(connection); },
+                ip, port, [this] { // TODO Send accept to api out
+                },
                 [this](int errorCode, std::string errorMessage)
                 {
-                    api_disconnect(connection);
+                    // TODO Connection refused
                     // log_info("Connection failed: %d : %s", errorCode, errorMessage);
                 });
         }
@@ -75,30 +84,18 @@ namespace Api
             idCopy = id;
             id_lock.unlock();
         }
-        bool isAccepted() { return true; }
-
         void sendMessage(char *messageBuffer, MessageLengthType messageLength)
         {
             hang_until_socket_send(socket, messageBuffer, messageLength);
         }
-    };
-
-    class PreConnection : public Connection
-    {
-    private:
-        bool accepted = false;
-        std::mutex acceptedLock;
-
-    public:
-        std::array<char, MAX_PRE_MESSAGE_LENGTH> preMessageBuffer;
-        bool isAccepted()
-        {
-            bool acceptedCopy;
-            acceptedLock.lock();
-            acceptedCopy = accepted;
-            acceptedLock.unlock();
-            return acceptedCopy;
-        }
+        // bool isAccepted()
+        // {
+        //     bool acceptedCopy;
+        //     acceptedLock.lock();
+        //     acceptedCopy = accepted;
+        //     acceptedLock.unlock();
+        //     return acceptedCopy;
+        // }
 
         void accept()
         {
@@ -125,6 +122,7 @@ namespace Api
             }
         }
     };
+
     // template <class T, class Func>
     // void do_chunks(T container, size_t K, Func func)
     // {
